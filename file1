@@ -1,0 +1,394 @@
+#include <atomic>
+#include <vector>
+#include <iostream>
+#include <unistd.h>
+#include <pthread.h>
+#include <thread>
+#include <mutex>
+#include <stdio.h>
+#include <limits.h>
+#include <cstdlib>
+#include <sys/types.h>
+#include <sys/time.h>
+
+
+
+using namespace std;
+
+const int MAX_LEVEL = 4;
+
+class Node{
+public:
+    std::recursive_mutex m;
+    std::unique_lock<std::recursive_mutex> lk = std::unique_lock<std::recursive_mutex>(m,std::defer_lock);
+    //const lock = new ReentrantLock();
+    int item;
+    int key;
+    std::vector<Node*> next ;
+    atomic<bool> marked{false};
+    atomic<bool> fullyLinked{false};
+    int toplevel;
+    Node(){
+
+    }
+    Node(int key){ 
+        this->item = NULL;
+        this->key = key;
+        next = std::vector<Node*>(MAX_LEVEL);
+        toplevel = MAX_LEVEL;
+    }
+    Node(int x,int height){
+        this->item = x;
+        this->key = x;
+        next = std::vector<Node*>(height);
+        toplevel = height;
+    }
+
+    
+    
+};
+
+class LazySkiplist{
+public :
+    Node *head = new Node(INT_MIN);
+    Node *tail = new Node(INT_MAX);
+    LazySkiplist(){
+        for(int i =0;i < head->next.size();i++){
+            head->next[i] = tail;
+        }
+    }
+
+    int hash(int x){
+        return x;
+    }
+
+    int find(int x,vector<Node*> &preds,vector<Node*> &succs){
+        //cout<<"Running find"<<endl;
+        int key = hash(x);
+        int lFound  = -1;
+        Node *pred = head;
+        for(int level = MAX_LEVEL-1; level >= 0; level--){
+            Node *curr = pred->next[level];
+            while(key>curr->key){
+                //cout<<level<<endl;
+                //cout<<"whileing "<<pred->next[level]->key<<curr->key<<endl;
+                //cout<<curr->next[level]->key<<endl;
+                pred = curr;
+                curr = pred->next[level];
+                //cout<<"next"<<endl;
+            }
+            //cout<<"Exited while"<<endl;
+            if(lFound  == -1 && key == curr->key){
+                lFound = level;
+            }
+            preds[level] = pred;
+            succs[level] = curr;
+            //cout<<succs[level]->key<<endl;
+        }
+        return lFound;
+    }
+
+    int randomLevel(){
+        return rand()%MAX_LEVEL;
+    }
+
+    bool add(int x){
+        int toplevel = randomLevel();
+        vector<Node*> preds = std::vector<Node*>(MAX_LEVEL);
+        vector<Node*> succs = std::vector<Node*>(MAX_LEVEL);
+        //cout<<"Stuck here 1\n";
+        while(true){
+            int lFound = find(x,preds,succs);
+
+            if(lFound != -1){
+                //cout<<"Stuck here11\n";
+                Node *nodeFound = succs[lFound];
+                //cout<<"Stuck here2\n";
+                if(!nodeFound->marked){
+                //    cout<<"Stuck here3\n";
+                    while(!nodeFound->fullyLinked){}
+                    //cout<<"Stuck here4\n";
+                    return false;
+                }
+                continue;
+            }
+            int highestLocked = -1;
+            {
+                int level = 0;
+                bool valid = true;
+                Node *newNode;
+                /**
+                 *Lock all the preds in each level till toplevel and then check if any of them is marked
+                **/
+                std::unique_lock<std::recursive_mutex> lk1 = std::unique_lock<std::recursive_mutex>(preds[0]->m,std::defer_lock);
+                std::unique_lock<std::recursive_mutex> lk2 = std::unique_lock<std::recursive_mutex>(preds[1]->m,std::defer_lock);
+                std::unique_lock<std::recursive_mutex> lk3 = std::unique_lock<std::recursive_mutex>(preds[2]->m,std::defer_lock);
+                std::unique_lock<std::recursive_mutex> lk4 = std::unique_lock<std::recursive_mutex>(preds[3]->m,std::defer_lock);
+                switch(toplevel){
+                    case 0:
+                        
+                        std::unique_lock<std::recursive_mutex> {preds[0]->m};
+                        while(level<=toplevel && valid){
+                            Node *pred;
+                            Node *succ;
+                            pred = preds[level];
+                            succ = succs[level];
+                            
+                            valid = !pred->marked && !succ->marked && pred->next[level]==succ;
+                            level++;
+                        }
+                        /**
+                        *If not valid retry
+                        **/
+                        if(!valid)break;
+                        /**
+                        * Create a newNode and attach preds and succs in each level
+                        **/
+                        newNode = new Node(x,toplevel);
+                        for(level = 0;level<=toplevel;level++)
+                            newNode->next[level] = succs[level];
+                        for(level = 0;level <= toplevel; level++)
+                            preds[level]->next[level] = newNode;
+                        for(level = toplevel+1;level<MAX_LEVEL;level++)
+                            preds[level]->next[level] = succs[level];
+                        newNode->fullyLinked = true;
+                        break;
+                    case 1:
+                        
+                        lock(lk1,lk2);
+                        while(level<=toplevel && valid){
+                            Node *pred;
+                            Node *succ;
+                            pred = preds[level];
+                            succ = succs[level];
+                            
+
+                            valid = !pred->marked && !succ->marked && pred->next[level]==succ;
+                            level++;
+                        }
+                        /**
+                        *If not valid retry
+                        **/
+                        if(!valid)break;
+                        /**
+                        * Create a newNode and attach preds and succs in each level
+                        **/
+                        newNode = new Node(x,toplevel);
+                        for(level = 0;level<=toplevel;level++)
+                            newNode->next[level] = succs[level];
+                        for(level = 0;level <= toplevel; level++)
+                            preds[level]->next[level] = newNode;
+                        for(level = toplevel+1;level<MAX_LEVEL;level++)
+                            preds[level]->next[level] = succs[level];
+                        newNode->fullyLinked = true;
+                        break;
+                    case 2:
+                        
+                        lock(lk1,lk2,lk3);
+                        while(level<=toplevel && valid){
+                            Node *pred;
+                            Node *succ;
+                            pred = preds[level];
+                            succ = succs[level];
+                            
+                            valid = !pred->marked && !succ->marked && pred->next[level]==succ;
+                            level++;
+                        }
+                        /**
+                        *If not valid retry
+                        **/
+                        if(!valid)break;
+                        /**
+                        * Create a newNode and attach preds and succs in each level
+                        **/
+                        newNode = new Node(x,toplevel);
+                        for(level = 0;level<=toplevel;level++)
+                            newNode->next[level] = succs[level];
+                        for(level = 0;level <= toplevel; level++)
+                            preds[level]->next[level] = newNode;
+                        for(level = toplevel+1;level<MAX_LEVEL;level++)
+                            preds[level]->next[level] = succs[level];
+                        newNode->fullyLinked = true;
+                        break;
+                    case 3:
+                        //cout<<"Stuck here 6"<<endl;
+
+                        lock(lk1,lk2,lk3,lk4);
+                        while(level<=toplevel && valid){
+                            Node *pred;
+                            Node *succ;
+                            pred = preds[level];
+                            succ = succs[level];
+                            valid = !pred->marked && !succ->marked && pred->next[level]==succ;
+                            level++;
+                        }
+                        /**
+                        *If not valid retry
+                        **/
+                        //cout<<"level "<<level<<" "<<valid<<endl;
+                        if(!valid)break;
+                        /**
+                        * Create a newNode and attach preds and succs in each level
+                        **/
+                        //cout<<"Valid false "<<valid<<endl;
+                        newNode = new Node(x,toplevel);
+                        
+                        for(level = 0;level<=toplevel;level++)
+                            newNode->next[level] = succs[level];
+                        for(level = 0;level <= toplevel; level++)
+                            preds[level]->next[level] = newNode;
+                        for(level = toplevel+1;level<MAX_LEVEL;level++)
+                            preds[level]->next[level] = succs[level];
+                        newNode->fullyLinked = true;
+                        break;
+                }
+                if(!valid)continue;
+                return true;
+            }
+        }
+    }
+
+    bool remove(int x){
+        Node *victim;
+        bool isMarked = false;
+        int toplevel = -1;
+        vector<Node*> preds = vector<Node*>(MAX_LEVEL);
+        vector<Node*> succs = vector<Node*>(MAX_LEVEL);
+        //Try to remove the Node with int 'x'
+        while(true){
+            int lFound = find(x,preds,succs);
+            if(lFound != -1)victim = succs[lFound];
+            //If victim is marked or found and not marked
+            if(isMarked || (lFound != -1 &&
+                                (victim->fullyLinked && victim->toplevel==lFound && !victim->marked))){
+                /**
+                *If victime is not marked acquire the lock on the victim and mark it 
+                **/
+                if(!isMarked){
+                    toplevel = victim->toplevel;
+                    std::lock_guard<std::recursive_mutex> gaurd(victim->m);
+                    /**
+                     * If already marked by other thread return as it is being removed by other thread
+                    **/
+                    if(victim->marked){
+                        return false;
+                    }
+                    /**
+                     * Mark the Victim to be deleted
+                    **/
+                    victim->marked = true;
+                    isMarked = true;
+                }
+                
+                int highestLocked = -1;
+                {
+                    int level = 0;
+                    bool valid = true;
+                    /**
+                     *Lock all the preds in each level till toplevel and then check if any of them is marked
+                    **/
+                    std::unique_lock<std::recursive_mutex> lk1 = std::unique_lock<std::recursive_mutex>(preds[0]->m,std::defer_lock);
+                    std::unique_lock<std::recursive_mutex> lk2 = std::unique_lock<std::recursive_mutex>(preds[1]->m,std::defer_lock);
+                    std::unique_lock<std::recursive_mutex> lk3 = std::unique_lock<std::recursive_mutex>(preds[2]->m,std::defer_lock);
+                    std::unique_lock<std::recursive_mutex> lk4 = std::unique_lock<std::recursive_mutex>(preds[3]->m,std::defer_lock);
+                
+                    switch(toplevel){
+                        case 0:
+                            preds[0]->lk.lock();
+                            while(level<=toplevel && valid){
+                                Node *pred,*succ;
+                                pred = preds[level];
+                                succ = succs[level];
+                                valid = !pred->marked && pred->next[level]==victim;
+                                level++;
+                            }
+                            /**
+                            *If not valid retry
+                            **/
+
+                            if(!valid)break;
+                            /**
+                             * Attach all preds to succs in each level
+                            **/
+                            for(level = toplevel;level>=0;level--)
+                                preds[level]->next[level] = victim->next[level];
+                            break;
+                        case 1:
+                            lock(lk1,lk2);
+                            while(level<=toplevel && valid){
+                                Node *pred,*succ;
+                                pred = preds[level];
+                                succ = succs[level];
+                                valid = !pred->marked && pred->next[level]==victim;
+                                level++;
+                            }
+                            if(!valid)break;
+                            for(level = toplevel;level>=0;level--)
+                                preds[level]->next[level] = victim->next[level];
+                            break;
+                        case 2:
+                            lock(lk1,lk2,lk3);
+                            while(level<=toplevel && valid){
+                                Node *pred,*succ;
+                                pred = preds[level];
+                                succ = succs[level];
+                                valid = !pred->marked && pred->next[level]==victim;
+                                level++;
+                            }
+                            if(!valid)break;
+                            for(level = toplevel;level>=0;level--)
+                                preds[level]->next[level] = victim->next[level];
+                            break;
+                        case 3:
+                            lock(lk1,lk2,lk3,lk4);
+                            while(level<=toplevel && valid){
+                                Node *pred,*succ;
+                                pred = preds[level];
+                                succ = succs[level];
+                                valid = !pred->marked && pred->next[level]==victim;
+                                level++;
+                            }
+                            if(!valid)break;
+                            for(level = toplevel;level>=0;level--)
+                                preds[level]->next[level] = victim->next[level];
+                            break;
+                    }
+                    if(!valid)continue;
+                    return true;
+                }
+            }else return false;
+
+        }
+    }
+
+    
+    bool contains(int x){
+        vector<Node*> preds = vector<Node*>(MAX_LEVEL);
+        vector<Node*> succs = vector<Node*>(MAX_LEVEL);
+        int lFound = find(x,preds,succs);
+        return (lFound!=-1 && succs[lFound]->fullyLinked && !succs[lFound]->marked);
+    }
+
+    void print(){
+        cout<<"printing all levels"<<endl;
+        for(int level = MAX_LEVEL-1;level>=0;level--){
+            Node* curr = head->next[level];
+            while(curr!=tail){
+                cout<<curr->key<<" ";
+                curr = curr->next[level];
+            }
+            cout<<endl;
+        }
+    }
+};
+
+int main(){
+    LazySkiplist ls;
+    ls.add(10);
+    ls.contains(10);
+    ls.add(20);
+    ls.print();
+    ls.remove(20);
+    ls.print();
+    return 0;
+}
